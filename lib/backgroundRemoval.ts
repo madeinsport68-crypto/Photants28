@@ -33,10 +33,9 @@ async function getSegmenter() {
 }
 
 /**
- * Applique le détourage et le fond clair sur une image.
- * @param canvasInput Canvas ou Image contenant l'image source
- * @param backgroundColor Couleur du fond (défaut: #F5F5F5 gris clair)
- * @returns Canvas avec détourage et fond clair
+ * Remplace le fond par une couleur claire, sans toucher au sujet.
+ * Le masque est appliqué correctement: les pixels du fond deviennent gris clair,
+ * et les pixels du sujet restent inchangés.
  */
 export async function removeBackgroundAndApplyLight(
   canvasInput: HTMLCanvasElement | HTMLImageElement,
@@ -69,28 +68,42 @@ export async function removeBackgroundAndApplyLight(
 
     const width = sourceImage.width || (sourceImage as HTMLCanvasElement).width;
     const height = sourceImage.height || (sourceImage as HTMLCanvasElement).height;
-    const outputCanvas = document.createElement("canvas");
-    outputCanvas.width = width;
-    outputCanvas.height = height;
 
-    const ctx = outputCanvas.getContext("2d", { willReadFrequently: true })!;
-    ctx.fillStyle = backgroundColor;
-    ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
-    ctx.drawImage(sourceImage, 0, 0);
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = width;
+    sourceCanvas.height = height;
+    const sourceCtx = sourceCanvas.getContext("2d", { willReadFrequently: true })!;
+    sourceCtx.drawImage(sourceImage, 0, 0, width, height);
 
-    const imageData = ctx.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
-    const data = imageData.data;
+    const sourceData = sourceCtx.getImageData(0, 0, width, height);
     const mask = categoryMask.getAsUint8Array();
+    const output = new ImageData(width, height);
+
+    // Convert backgroundColor hex -> RGB
+    const bg = hexToRgb(backgroundColor);
 
     for (let i = 0; i < mask.length; i++) {
-      const pixelIndex = i * 4;
+      const offset = i * 4;
       const isForeground = mask[i] > 0;
-      if (!isForeground) {
-        data[pixelIndex + 3] = 255;
+
+      if (isForeground) {
+        output.data[offset] = sourceData.data[offset];
+        output.data[offset + 1] = sourceData.data[offset + 1];
+        output.data[offset + 2] = sourceData.data[offset + 2];
+        output.data[offset + 3] = 255;
+      } else {
+        output.data[offset] = bg.r;
+        output.data[offset + 1] = bg.g;
+        output.data[offset + 2] = bg.b;
+        output.data[offset + 3] = 255;
       }
     }
 
-    ctx.putImageData(imageData, 0, 0);
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = width;
+    outputCanvas.height = height;
+    const ctx = outputCanvas.getContext("2d")!;
+    ctx.putImageData(output, 0, 0);
     return outputCanvas;
   } catch (err) {
     console.error("Erreur lors du détourage:", err);
@@ -101,6 +114,17 @@ export async function removeBackgroundAndApplyLight(
     fallbackCanvas.getContext("2d")!.drawImage(canvasInput, 0, 0);
     return fallbackCanvas;
   }
+}
+
+function hexToRgb(hex: string) {
+  const sanitized = hex.replace("#", "");
+  const full = sanitized.length === 3 ? sanitized.split("").map((c) => c + c).join("") : sanitized;
+  const num = Number.parseInt(full, 16);
+  return {
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255,
+  };
 }
 
 /**
