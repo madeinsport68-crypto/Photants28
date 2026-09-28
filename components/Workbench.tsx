@@ -13,12 +13,15 @@ import {
   ZoomOut,
   ArrowLeft,
   Hand,
+  Wand2,
 } from "lucide-react";
 import type { PhotoFormat } from "@/lib/formats";
 import { aspectOf } from "@/lib/formats";
 import { fileToImageUrl } from "@/lib/image";
 import { preloadDetector } from "@/lib/compliance";
+import { removeBackgroundAndApplyLight, preloadSegmenter } from "@/lib/backgroundRemoval";
 import CameraCapture from "./CameraCapture";
+import BackgroundRemovalPreview from "./BackgroundRemovalPreview";
 
 export interface CropState {
   crop: { x: number; y: number };
@@ -42,11 +45,14 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
   const [camera, setCamera] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showBackgroundRemoval, setShowBackgroundRemoval] = useState(false);
+  const [isProcessingBackground, setIsProcessingBackground] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const aspect = aspectOf(format);
 
   useEffect(() => {
     preloadDetector();
+    preloadSegmenter();
   }, []);
 
   const set = (patch: Partial<CropState>) => onCropState({ ...cropState, ...patch });
@@ -57,12 +63,54 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
     setLoading(true);
     try {
       const url = await fileToImageUrl(file);
-      onImage(url);
+      await processImageWithBackground(url);
     } catch {
       setErr("Ce fichier n'a pas pu être lu. Formats acceptés : JPG, PNG, HEIC.");
     } finally {
       setLoading(false);
       if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const processImageWithBackground = async (imageUrl: string) => {
+    setIsProcessingBackground(true);
+    try {
+      // Charge l'image
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = async () => {
+        try {
+          // Crée un canvas temporaire avec l'image
+          const tempCanvas = document.createElement("canvas");
+          tempCanvas.width = img.naturalWidth;
+          tempCanvas.height = img.naturalHeight;
+          const ctx = tempCanvas.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+
+          // Applique le détourage et le fond clair
+          const resultCanvas = await removeBackgroundAndApplyLight(tempCanvas, "#F5F5F5");
+
+          // Convertit en URL
+          const processedUrl = resultCanvas.toDataURL("image/png");
+          onImage(processedUrl);
+        } catch (e) {
+          console.error("Erreur lors du détourage:", e);
+          // En cas d'erreur, utilise l'image originale
+          onImage(imageUrl);
+        } finally {
+          setIsProcessingBackground(false);
+        }
+      };
+      img.onerror = () => {
+        console.error("Impossible de charger l'image");
+        onImage(imageUrl);
+        setIsProcessingBackground(false);
+      };
+      img.src = imageUrl;
+    } catch (e) {
+      console.error(e);
+      onImage(imageUrl);
+      setIsProcessingBackground(false);
     }
   };
 
@@ -74,7 +122,7 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
   const guideStyle: React.CSSProperties = {
     border: "3px solid rgba(255,255,255,0.95)",
     backgroundImage: [
-      `linear-gradient(to bottom, transparent ${crownA}%, rgba(16,185,129,0.28) ${crownA}%, rgba(16,185,129,0.28) ${crownB}%, transparent ${crownB}%, transparent ${chinA}%, rgba(16,185,129,0.28) ${chinA}%, rgba(16,185,129,0.28) ${chinB}%, transparent ${chinB}%)`,
+      `linear-gradient(to bottom, transparent ${crownA}%, rgba(16,185,129,0.28) ${crownA}%, rgba(16,185,129,0.28) ${crownB}%, transparent ${crownB}%, transparent ${chinA}%, rgba(16,185,129,0.28) ${chinB}%, transparent ${chinB}%)`,
       "linear-gradient(to right, transparent calc(50% - 1px), rgba(255,255,255,0.7) calc(50% - 1px), rgba(255,255,255,0.7) calc(50% + 1px), transparent calc(50% + 1px))",
     ].join(","),
   };
@@ -94,15 +142,22 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
       <div className="grid gap-4 sm:grid-cols-2">
         <button
           onClick={() => setCamera(true)}
-          className="flex h-20 items-center justify-center gap-3 rounded-2xl bg-brand-blue text-xl font-black text-white shadow-lg shadow-brand-blue/25 transition hover:bg-brand-blueDark active:scale-[0.99]"
+          className="flex h-20 items-center justify-center gap-3 rounded-2xl bg-brand-blue text-xl font-black text-white shadow-lg shadow-brand-blue/25 transition hover:bg-brand-blueDark active:scale-[0.99] disabled:opacity-50"
+          disabled={isProcessingBackground}
         >
           <Camera className="h-7 w-7" /> APPAREIL PHOTO
         </button>
         <button
           onClick={() => fileRef.current?.click()}
-          className="flex h-20 items-center justify-center gap-3 rounded-2xl border-2 border-slate-300 bg-white text-xl font-black shadow-sm transition hover:border-brand-blue active:scale-[0.99] dark:border-slate-700 dark:bg-slate-900"
+          className="flex h-20 items-center justify-center gap-3 rounded-2xl border-2 border-slate-300 bg-white text-xl font-black shadow-sm transition hover:border-brand-blue active:scale-[0.99] disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:hover:border-brand-blue"
+          disabled={loading || isProcessingBackground}
         >
-          {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <FolderOpen className="h-7 w-7" />} TÉLÉVERSER
+          {loading || isProcessingBackground ? (
+            <Loader2 className="h-7 w-7 animate-spin" />
+          ) : (
+            <FolderOpen className="h-7 w-7" />
+          )}
+          {isProcessingBackground ? "TRAITEMENT..." : "TÉLÉVERSER"}
         </button>
         <input
           ref={fileRef}
@@ -110,6 +165,7 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
           accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png"
           className="hidden"
           onChange={(e) => onFile(e.target.files?.[0])}
+          disabled={isProcessingBackground}
         />
       </div>
       {err && <p className="mt-3 rounded-xl bg-red-100 p-3 text-sm font-semibold text-red-700 dark:bg-red-900/40 dark:text-red-300">{err}</p>}
@@ -200,6 +256,15 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
             Réinitialiser le cadrage
           </button>
 
+          <div className="rounded-2xl bg-violet-50 p-4 text-sm dark:bg-violet-900/30">
+            <p className="mb-2 flex items-center gap-2 font-bold text-violet-900 dark:text-violet-300">
+              <Wand2 className="h-4 w-4" /> Détourage appliqué
+            </p>
+            <p className="text-violet-800 dark:text-violet-200">
+              Le fond a été automatiquement supprimé et remplacé par un gris clair (#F5F5F5) conforme ANTS/OACI.
+            </p>
+          </div>
+
           <div className="rounded-2xl bg-slate-100 p-4 text-sm dark:bg-slate-800">
             <p className="mb-2 font-bold">Repères de cadrage</p>
             <ul className="space-y-1.5 text-slate-600 dark:text-slate-300">
@@ -221,7 +286,7 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
           <button
             onClick={onValidate}
             disabled={!imageSrc || !cropState.pixels || busy}
-            className="mt-auto flex h-16 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-lg font-black text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 active:scale-[0.99] disabled:opacity-40"
+            className="mt-auto flex h-16 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-lg font-black text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-700 dark:hover:bg-emerald-600"
           >
             {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : <ScanFace className="h-6 w-6" />}
             VALIDER &amp; ANALYSER
@@ -233,9 +298,9 @@ export default function Workbench({ format, imageSrc, onImage, cropState, onCrop
         <CameraCapture
           aspect={aspect}
           onClose={() => setCamera(false)}
-          onCapture={(url) => {
+          onCapture={async (url) => {
             setCamera(false);
-            onImage(url);
+            await processImageWithBackground(url);
           }}
         />
       )}
